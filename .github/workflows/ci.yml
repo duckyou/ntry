@@ -68,6 +68,8 @@ jobs:
   publish-release:
     needs: build-release
     runs-on: ubuntu-latest
+    env:
+      GH_REPO: ${{ github.repository }}
     permissions:
       contents: write
     steps:
