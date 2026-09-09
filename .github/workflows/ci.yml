@@ -20,6 +20,7 @@ jobs:
         with:
           toolchain: "1.90"
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -29,6 +30,7 @@ jobs:
       - run: npm --prefix web run build
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clean -p libduckdb-sys
       - run: cargo test --all-features
 
   build-release:
@@ -47,6 +49,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.90"
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
