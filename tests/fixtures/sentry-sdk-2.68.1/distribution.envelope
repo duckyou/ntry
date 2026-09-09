@@ -1,0 +1,3 @@
+{"sent_at":"2026-09-07T22:40:50Z"}
+{"item_count":1,"type":"trace_metric","content_type":"application/vnd.sentry.items.trace-metric+json","length":317}
+{"version":2,"items":[{"timestamp":1788820850.732386,"name":"fixture.distribution","type":"distribution","value":4.5,"unit":"millisecond","attributes":{"sentry.sdk.name":{"value":"sentry.python","type":"string"},"sentry.sdk.version":{"value":"2.68.1","type":"string"}},"trace_id":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}]}

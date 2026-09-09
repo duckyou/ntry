@@ -1,0 +1,3 @@
+{"event_id":"11111111111141118111111111111111","sent_at":"2026-09-07T22:40:50Z","trace":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","environment":"production"}}
+{"type":"event","content_type":"application/json","length":426}
+{"level":"error","exception":{"values":[{"mechanism":{"type":"generic","handled":true},"type":"ValueError","value":"fixture error","stacktrace":{"frames":[{"filename":"app.py","function":"run","lineno":7,"in_app":true}]}}]},"event_id":"11111111111141118111111111111111","timestamp":"2026-09-07T22:40:50Z","environment":"production","server_name":"fixture","sdk":{"name":"sentry.python","version":"2.68.1"},"platform":"python"}
