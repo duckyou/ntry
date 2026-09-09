@@ -74,6 +74,9 @@ struct Serve {
     #[arg(long, env = "NTRY_SENTRY_BIND")]
     sentry_bind: Option<SocketAddr>,
 
+    #[arg(long, env = "NTRY_DDTRACE_BIND")]
+    ddtrace_bind: Option<SocketAddr>,
+
     #[arg(long, env = "NTRY_OTLP_BIND")]
     otlp_bind: Option<SocketAddr>,
 
@@ -201,6 +204,9 @@ async fn main() -> Result<()> {
             if let Some(bind) = args.sentry_bind {
                 server::validate_bind(bind, args.allow_remote)?;
             }
+            if let Some(bind) = args.ddtrace_bind {
+                server::validate_bind(bind, args.allow_remote)?;
+            }
             if let Some(bind) = args.otlp_bind {
                 server::validate_bind(bind, args.allow_remote)?;
             }
@@ -209,6 +215,7 @@ async fn main() -> Result<()> {
             server::serve(
                 args.bind,
                 args.sentry_bind,
+                args.ddtrace_bind,
                 args.otlp_bind,
                 store,
                 args.durability,
@@ -232,6 +239,7 @@ async fn run_client(command: Command, client: Client, json: bool) -> Result<()> 
                 let project = client.add_project(name).await?;
                 let listeners = client.status().await?.listeners;
                 let dsn = client.dsn(&project, listeners.sentry)?;
+                let ddtrace_agent_url = client.ddtrace_agent_url(&project, listeners.ddtrace)?;
                 let otlp_endpoint = client.otlp_endpoint(&project, listeners.otlp)?;
                 let otlp_authorization = otlp_endpoint
                     .as_ref()
@@ -244,6 +252,7 @@ async fn run_client(command: Command, client: Client, json: bool) -> Result<()> 
                             "name": project.name,
                             "status": project.status,
                             "dsn": dsn,
+                            "ddtrace_agent_url": ddtrace_agent_url,
                             "otlp_endpoint": otlp_endpoint,
                             "otlp_authorization": otlp_authorization,
                         }))?
@@ -252,6 +261,10 @@ async fn run_client(command: Command, client: Client, json: bool) -> Result<()> 
                     println!("project: {}", project.name);
                     println!("id:      {}", project.id);
                     println!("sentry dsn: {}", dsn.as_deref().unwrap_or("disabled"));
+                    println!(
+                        "ddtrace agent url: {}",
+                        ddtrace_agent_url.as_deref().unwrap_or("disabled")
+                    );
                     if let Some(endpoint) = otlp_endpoint {
                         println!("otlp endpoint: {endpoint}");
                         println!("otlp header: Authorization=Bearer {}", project.key);
@@ -267,12 +280,15 @@ async fn run_client(command: Command, client: Client, json: bool) -> Result<()> 
                     let projects = projects
                         .iter()
                         .map(|project| -> Result<_> {
+                            let ddtrace_agent_url =
+                                client.ddtrace_agent_url(project, listeners.ddtrace)?;
                             let otlp_endpoint = client.otlp_endpoint(project, listeners.otlp)?;
                             Ok(serde_json::json!({
                                 "id": project.id,
                                 "name": project.name,
                                 "status": project.status,
                                 "dsn": client.dsn(project, listeners.sentry)?,
+                                "ddtrace_agent_url": ddtrace_agent_url,
                                 "otlp_endpoint": otlp_endpoint,
                                 "otlp_authorization": otlp_endpoint
                                     .as_ref()
@@ -284,9 +300,15 @@ async fn run_client(command: Command, client: Client, json: bool) -> Result<()> 
                 } else {
                     for project in projects {
                         let dsn = client.dsn(&project, listeners.sentry)?;
+                        let ddtrace_agent_url =
+                            client.ddtrace_agent_url(&project, listeners.ddtrace)?;
                         let otlp_endpoint = client.otlp_endpoint(&project, listeners.otlp)?;
                         println!("{}\t{}", project.id, project.name);
                         println!("  sentry dsn: {}", dsn.as_deref().unwrap_or("disabled"));
+                        println!(
+                            "  ddtrace agent url: {}",
+                            ddtrace_agent_url.as_deref().unwrap_or("disabled")
+                        );
                         if let Some(endpoint) = otlp_endpoint {
                             println!("  otlp endpoint: {endpoint}");
                             println!("  otlp header: Authorization=Bearer {}", project.key);
@@ -321,6 +343,13 @@ async fn run_client(command: Command, client: Client, json: bool) -> Result<()> 
                     status
                         .listeners
                         .sentry
+                        .map_or_else(|| "disabled".into(), |port| port.to_string())
+                );
+                println!(
+                    "ddtrace: {}",
+                    status
+                        .listeners
+                        .ddtrace
                         .map_or_else(|| "disabled".into(), |port| port.to_string())
                 );
                 println!(

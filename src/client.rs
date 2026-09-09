@@ -236,6 +236,30 @@ impl Client {
         Ok(Some(endpoint.to_string()))
     }
 
+    pub fn ddtrace_agent_url(
+        &self,
+        project: &Project,
+        port: Option<u16>,
+    ) -> Result<Option<String>> {
+        let Some(port) = port else {
+            return Ok(None);
+        };
+        let mut endpoint = self.base.clone();
+        endpoint
+            .set_port(Some(port))
+            .map_err(|_| anyhow::anyhow!("cannot set ddtrace port"))?;
+        endpoint
+            .set_username("")
+            .map_err(|_| anyhow::anyhow!("cannot clear ddtrace username"))?;
+        endpoint
+            .set_password(None)
+            .map_err(|_| anyhow::anyhow!("cannot clear ddtrace password"))?;
+        endpoint.set_path(&format!("/{}/{}/", project.id, project.key));
+        endpoint.set_query(None);
+        endpoint.set_fragment(None);
+        Ok(Some(endpoint.to_string()))
+    }
+
     fn url(&self, segments: &[&str]) -> Result<Url> {
         let mut url = self.base.clone();
         url.set_query(None);
@@ -341,6 +365,13 @@ mod tests {
         );
         assert_eq!(
             client
+                .ddtrace_agent_url(&project, Some(8112))
+                .unwrap()
+                .as_deref(),
+            Some("https://example.com:8112/42/project-key/")
+        );
+        assert_eq!(
+            client
                 .otlp_endpoint(&project, Some(8918))
                 .unwrap()
                 .as_deref(),
@@ -354,6 +385,7 @@ mod tests {
         let project = project(1, "demo");
 
         assert_eq!(client.dsn(&project, None).unwrap(), None);
+        assert_eq!(client.ddtrace_agent_url(&project, None).unwrap(), None);
         assert_eq!(client.otlp_endpoint(&project, None).unwrap(), None);
     }
 }

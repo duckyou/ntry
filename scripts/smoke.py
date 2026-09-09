@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["sentry-sdk==2.68.1"]
+# dependencies = ["ddtrace==4.14.0", "sentry-sdk==2.68.1"]
 # ///
 
 import json
@@ -44,6 +44,23 @@ def main():
                 "Sentry listener disabled; start ntry with "
                 "--sentry-bind 127.0.0.1:8911"
             )
+        if not project["ddtrace_agent_url"]:
+            raise RuntimeError(
+                "DDTrace listener disabled; start ntry with "
+                "--ddtrace-bind 127.0.0.1:8112"
+            )
+        os.environ["DD_TRACE_AGENT_URL"] = project["ddtrace_agent_url"]
+        os.environ["DD_INSTRUMENTATION_TELEMETRY_ENABLED"] = "false"
+        os.environ["DD_REMOTE_CONFIGURATION_ENABLED"] = "false"
+        from ddtrace import tracer
+
+        try:
+            with tracer.trace("ntry.smoke", service="ntry-smoke", resource="smoke"):
+                raise RuntimeError("ntry ddtrace smoke error")
+        except RuntimeError:
+            pass
+        tracer.shutdown()
+
         logging.basicConfig(level=logging.INFO)
         sentry_sdk.init(
             dsn=project["dsn"],
@@ -66,6 +83,9 @@ def main():
 
         errors = query("errors", "--project", project_name)
         assert errors
+        assert any(error["source"] == "ddtrace" for error in errors)
+        traces = query("traces", "--project", project_name)
+        assert any(trace["source"] == "ddtrace" for trace in traces)
         assert query("logs", "--project", project_name)
         assert query("issues", "--project", project_name)
         assert json.loads(

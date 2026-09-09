@@ -1,14 +1,15 @@
 # Ntry
 
-Ntry is a local Sentry-compatible and OTLP/HTTP sink for errors, logs, traces,
-and metrics. A single daemon owns Fjall hot storage, Zstandard Parquet archives,
-and the query API used by the web, CLI, and MCP front ends.
+Ntry is a local Sentry-compatible, Python ddtrace-compatible, and OTLP/HTTP
+sink for errors, logs, traces, and metrics. A single daemon owns Fjall hot
+storage, Zstandard Parquet archives, and the query API used by the web, CLI,
+and MCP front ends.
 
 ## Start
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/duckyou/ntry/main/install.sh | bash
-ntry serve --sentry-bind 127.0.0.1:8911 --otlp-bind 127.0.0.1:8918
+ntry serve --sentry-bind 127.0.0.1:8911 --ddtrace-bind 127.0.0.1:8112 --otlp-bind 127.0.0.1:8918
 ntry project add demo
 ```
 
@@ -28,10 +29,11 @@ The listeners use these conventional ports:
 |---|---|---|
 | Web UI, Ntry API, MCP | `--bind` / `NTRY_BIND` | `127.0.0.1:8910` |
 | Sentry | `--sentry-bind` / `NTRY_SENTRY_BIND` | disabled (use `127.0.0.1:8911`) |
+| Python ddtrace | `--ddtrace-bind` / `NTRY_DDTRACE_BIND` | disabled (use `127.0.0.1:8112`) |
 | OTLP/HTTP | `--otlp-bind` / `NTRY_OTLP_BIND` | disabled (use `127.0.0.1:8918`) |
 
-Sentry and OTLP ingestion are separately opt-in through `--sentry-bind` and
-`--otlp-bind`. A non-loopback bind requires `--allow-remote`; v1 has no TLS.
+Ingestion listeners are separately opt-in through their bind options. A
+non-loopback bind requires `--allow-remote`; v1 has no TLS.
 Project management is limited to loopback clients unless `--allow-remote` is
 set. Browser MCP requests must have an Origin that matches the Host header.
 Use `ntry serve --verbose` to print structured server logs. `RUST_LOG` can set
@@ -39,6 +41,20 @@ a custom tracing filter.
 
 Ntry stores data in `~/.config/ntry` by default. Override it with `--data-dir`
 or `NTRY_DATA_DIR`.
+
+## Python ddtrace
+
+The ddtrace listener accepts MessagePack v0.4 and v0.5 trace payloads. Run
+`ntry project add` or `ntry project list` to get the authenticated agent URL,
+then configure Python before importing `ddtrace`:
+
+```sh
+export DD_TRACE_AGENT_URL=http://127.0.0.1:8112/PROJECT_ID/PROJECT_KEY/
+```
+
+The project key is part of the URL because native Datadog trace requests do
+not include an application authentication header. Error spans also create
+Ntry Error records and issues.
 
 ## OTLP/HTTP
 
@@ -115,13 +131,14 @@ tools over stdio. MCP has no write or project-management tools.
 
 ## Compatibility Check
 
-Build the release binary, then run the daemon with Sentry ingestion enabled;
-the smoke script defaults to `NTRY_URL=http://127.0.0.1:8910` and discovers the
-advertised Sentry port. It does not require an OTLP Python package.
+Build the release binary, then run the daemon with Sentry and ddtrace ingestion
+enabled. The smoke script defaults to `NTRY_URL=http://127.0.0.1:8910` and
+discovers both advertised endpoints. It does not require an OTLP Python
+package.
 
 ```sh
 cargo build --release
-target/release/ntry serve --sentry-bind 127.0.0.1:8911
+target/release/ntry serve --sentry-bind 127.0.0.1:8911 --ddtrace-bind 127.0.0.1:8112
 ```
 
 In another terminal, using the same `NTRY_URL` and `NTRY_DATA_DIR`:

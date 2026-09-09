@@ -48,6 +48,7 @@ pub(crate) struct AppState {
 pub async fn serve(
     bind: SocketAddr,
     sentry_bind: Option<SocketAddr>,
+    ddtrace_bind: Option<SocketAddr>,
     otlp_bind: Option<SocketAddr>,
     store: Store,
     durability: Durability,
@@ -65,6 +66,14 @@ pub async fn serve(
         None => None,
     };
     let sentry_addr = sentry_listener
+        .as_ref()
+        .map(tokio::net::TcpListener::local_addr)
+        .transpose()?;
+    let ddtrace_listener = match ddtrace_bind {
+        Some(bind) => Some(tokio::net::TcpListener::bind(bind).await?),
+        None => None,
+    };
+    let ddtrace_addr = ddtrace_listener
         .as_ref()
         .map(tokio::net::TcpListener::local_addr)
         .transpose()?;
@@ -116,6 +125,7 @@ pub async fn serve(
         listeners: ListenerStatus {
             web_api: control_addr.port(),
             sentry: sentry_addr.map(|address| address.port()),
+            ddtrace: ddtrace_addr.map(|address| address.port()),
             otlp: otlp_addr.map(|address| address.port()),
         },
         allow_remote: !is_loopback(bind.ip()),
@@ -144,6 +154,15 @@ pub async fn serve(
             server_done_sender.clone(),
         ));
     }
+    if let Some(listener) = ddtrace_listener {
+        server_tasks.push(spawn_http(
+            "DDTrace",
+            listener,
+            crate::ingest::ddtrace::router().with_state(state.clone()),
+            shutdown_receiver.clone(),
+            server_done_sender.clone(),
+        ));
+    }
     if let Some(listener) = otlp_listener {
         server_tasks.push(spawn_http(
             "OTLP",
@@ -155,12 +174,15 @@ pub async fn serve(
     }
     eprintln!(
         "{}",
-        startup_message(&web_url, &data_path, sentry_addr, otlp_addr)
+        startup_message(&web_url, &data_path, sentry_addr, ddtrace_addr, otlp_addr,)
     );
     tracing::info!(data_path, "opened ntry data");
     tracing::info!(bind = %control_addr, %web_url, "web/API listener started");
     if let Some(address) = sentry_addr {
         tracing::info!(bind = %address, "Sentry listener started");
+    }
+    if let Some(address) = ddtrace_addr {
+        tracing::info!(bind = %address, "DDTrace listener started");
     }
     if let Some(address) = otlp_addr {
         tracing::info!(bind = %address, "OTLP/HTTP listener started");
@@ -194,10 +216,15 @@ fn startup_message(
     web_url: &str,
     data_path: &str,
     sentry_addr: Option<SocketAddr>,
+    ddtrace_addr: Option<SocketAddr>,
     otlp_addr: Option<SocketAddr>,
 ) -> String {
     let sentry = sentry_addr.map_or_else(
         || "disabled (use --sentry-bind 127.0.0.1:8911)".into(),
+        |address| format!("http://{}", client_address(address)),
+    );
+    let ddtrace = ddtrace_addr.map_or_else(
+        || "disabled (use --ddtrace-bind 127.0.0.1:8112)".into(),
         |address| format!("http://{}", client_address(address)),
     );
     let otlp = otlp_addr.map_or_else(
@@ -205,7 +232,7 @@ fn startup_message(
         |address| format!("http://{}", client_address(address)),
     );
     format!(
-        "\n[ NTRY ] telemetry server\n\n  Web UI     {web_url}\n  Data       {data_path}\n\n  INGESTORS\n  Sentry     {sentry}\n  OTLP/HTTP  {otlp}\n\n  Press Ctrl-C to stop\n"
+        "\n[ NTRY ] telemetry server\n\n  Web UI     {web_url}\n  Data       {data_path}\n\n  INGESTORS\n  Sentry     {sentry}\n  DDTrace    {ddtrace}\n  OTLP/HTTP  {otlp}\n\n  Press Ctrl-C to stop\n"
     )
 }
 
@@ -648,6 +675,7 @@ impl AppState {
             listeners: ListenerStatus {
                 web_api: 0,
                 sentry: None,
+                ddtrace: None,
                 otlp: None,
             },
             allow_remote: false,
@@ -685,9 +713,11 @@ mod tests {
             "/tmp/ntry/db",
             Some("0.0.0.0:8911".parse().unwrap()),
             None,
+            None,
         );
         assert!(message.contains("Web UI     http://127.0.0.1:8910/"));
         assert!(message.contains("Sentry     http://127.0.0.1:8911"));
+        assert!(message.contains("DDTrace    disabled (use --ddtrace-bind 127.0.0.1:8112)"));
         assert!(message.contains("OTLP/HTTP  disabled (use --otlp-bind 127.0.0.1:8918)"));
     }
 
@@ -719,11 +749,13 @@ mod tests {
         let state = AppState::for_test(store, writer.clone(), process);
         let control = control_router(state.clone(), Client::new("http://127.0.0.1:1").unwrap());
         let sentry = crate::ingest::sentry::router().with_state(state.clone());
+        let ddtrace = crate::ingest::ddtrace::router().with_state(state.clone());
         let otlp = crate::ingest::otlp::router().with_state(state);
 
         for (router, expected) in [
             (control.clone(), StatusCode::OK),
             (sentry.clone(), StatusCode::NOT_FOUND),
+            (ddtrace.clone(), StatusCode::NOT_FOUND),
             (otlp.clone(), StatusCode::NOT_FOUND),
         ] {
             let response = router
@@ -736,6 +768,7 @@ mod tests {
         for (router, expected) in [
             (control.clone(), StatusCode::NOT_FOUND),
             (sentry.clone(), StatusCode::OK),
+            (ddtrace.clone(), StatusCode::NOT_FOUND),
             (otlp.clone(), StatusCode::NOT_FOUND),
         ] {
             let response =
@@ -758,6 +791,23 @@ mod tests {
             assert_eq!(response.status(), expected);
         }
 
+        for (router, expected) in [
+            (control.clone(), StatusCode::NOT_FOUND),
+            (sentry.clone(), StatusCode::NOT_FOUND),
+            (ddtrace.clone(), StatusCode::OK),
+            (otlp.clone(), StatusCode::NOT_FOUND),
+        ] {
+            let response = router
+                .oneshot(
+                    Request::get(format!("/{}/{}/info", project.id, project.key))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+
         for (path, body) in [
             (
                 "v1/traces",
@@ -775,6 +825,7 @@ mod tests {
             for (router, expected) in [
                 (control.clone(), StatusCode::NOT_FOUND),
                 (sentry.clone(), StatusCode::NOT_FOUND),
+                (ddtrace.clone(), StatusCode::NOT_FOUND),
                 (otlp.clone(), StatusCode::OK),
             ] {
                 let response = router

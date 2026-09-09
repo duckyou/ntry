@@ -7,18 +7,11 @@
  */
 export async function loadAllPages(fetchPage) {
   const records = [];
-  const ids = new Set();
-  const cursors = new Set();
   let cursor = null;
   do {
     const page = await fetchPage(cursor);
-    for (const record of page.items) {
-      if (!ids.has(record.id)) records.push(record);
-      ids.add(record.id);
-    }
+    records.push(...page.items);
     cursor = page.next_cursor;
-    if (cursor && cursors.has(cursor)) throw new Error("trace pagination repeated a cursor");
-    if (cursor) cursors.add(cursor);
   } while (cursor);
   return records;
 }

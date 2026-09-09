@@ -168,6 +168,7 @@ pub struct Status {
 pub struct ListenerStatus {
     pub web_api: u16,
     pub sentry: Option<u16>,
+    pub ddtrace: Option<u16>,
     pub otlp: Option<u16>,
 }
 

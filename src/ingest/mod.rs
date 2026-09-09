@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::model::StoredRecord;
 
+pub mod ddtrace;
 pub mod otlp;
 pub mod sentry;
 

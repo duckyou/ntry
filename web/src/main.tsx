@@ -1,6 +1,5 @@
 import { FormEvent, startTransition, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Check, Copy, ListPlus } from "lucide-react";
 import { loadAllPages, traceRows } from "./trace.js";
 import "./style.css";
 
@@ -31,9 +30,8 @@ type Record = {
 type Status = {
   records: number;
   disk_bytes: number;
-  storage_target_bytes: number;
   storage_warning: boolean;
-  listeners: { web_api: number; sentry: number | null; otlp: number | null };
+  listeners: { web_api: number; sentry: number | null; ddtrace: number | null; otlp: number | null };
   process: { accepted: number; malformed: number; failed: number };
 };
 type Page<T> = { items: T[]; next_cursor: string | null };
@@ -41,16 +39,14 @@ type Tab = "issues" | "logs" | "metrics" | "traces";
 type Theme = "dark" | "light" | "system";
 type StaticPage = "settings" | "docs" | null;
 type View = { projectId: number; tab: Tab; range: keyof typeof ranges; query: string; items: (Issue | Record)[] };
-type Change = { project_id: number; signal: Signal; sequence: number };
+type Change = { project_id: number; signal: Signal };
 type IssueEvent = { issueId: string; records?: Record[]; record?: Record; error?: string };
 type WebRoute = { projectId: number | null; tab: Tab; issueId: string | null; range: keyof typeof ranges; query: string };
 type StackFrame = {
   filename?: string;
   path?: string;
-  module?: string;
   function?: string;
   line?: number;
-  column?: number;
   in_app?: boolean;
   context_line?: string;
   pre_context?: string[];
@@ -60,7 +56,6 @@ type StackFrame = {
 type ExceptionValue = {
   type?: string;
   message?: string;
-  module?: string;
   mechanism?: string;
   handled?: boolean;
   frames?: StackFrame[];
@@ -165,26 +160,11 @@ const traceDuration = (record: Record) => {
   if (nanoseconds < 1_000_000_000) return `${(nanoseconds / 1_000_000).toFixed(1)} ms`;
   return `${(nanoseconds / 1_000_000_000).toFixed(2)} s`;
 };
-const dsn = (project: Project, port: number | null | undefined) => {
+const ingestUrl = (port: number | null | undefined, path: string, username = "") => {
   if (!port) return null;
-  const url = new URL(location.href);
+  const url = new URL(path, location.origin);
   url.port = String(port);
-  url.pathname = `/${project.id}`;
-  url.search = "";
-  url.hash = "";
-  url.username = project.key;
-  url.password = "";
-  return url.toString().replace(/\/$/, "");
-};
-const otlpEndpoint = (project: Project, port: number | null | undefined) => {
-  if (!port) return null;
-  const url = new URL(location.href);
-  url.port = String(port);
-  url.pathname = `/${project.id}/`;
-  url.search = "";
-  url.hash = "";
-  url.username = "";
-  url.password = "";
+  url.username = username;
   return url.toString();
 };
 
@@ -217,7 +197,7 @@ function Bars({ records }: { records: Record[] }) {
   const values = records.slice(0, 24).reverse().map(metricValue);
   const max = Math.max(...values.map(Math.abs), 1);
   return (
-    <div className="flex h-16 items-end gap-1" aria-label={`Recent values: ${values.join(", ")}`}>
+    <div className="metric-bars" aria-label={`Recent values: ${values.join(", ")}`}>
       {values.map((value, index) => (
         <i key={index} className="metric-bar" style={{ height: `${Math.max(6, (Math.abs(value) / max) * 100)}%` }} />
       ))}
@@ -234,9 +214,7 @@ const prefixedPairs = (fields: globalThis.Record<string, unknown>, prefix: strin
   .map(([name, value]) => [name.slice(prefix.length), value]);
 
 const display = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2);
-const queryLiteral = (value: string | number | boolean) => typeof value === "string"
-  ? `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`
-  : String(value);
+const queryLiteral = (value: string | number | boolean) => JSON.stringify(value);
 const displayTime = (value: unknown) => {
   if (typeof value === "number") return new Date(value < 1_000_000_000_000 ? value * 1_000 : value).toLocaleString();
   if (typeof value === "string" && !Number.isNaN(Date.parse(value))) return new Date(value).toLocaleString();
@@ -267,7 +245,7 @@ function InfoCard({ title, values, collapsible = false, actions = false, onAddQu
                 title={typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? "Add to query" : "Only scalar values can be queried"}
                 disabled={typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean"}
                 onClick={() => onAddQuery?.(title, name, value as string | number | boolean)}
-              ><ListPlus aria-hidden="true" /></button>
+              >+</button>
               <button
                 type="button"
                 aria-label={`Copy ${name}`}
@@ -278,7 +256,7 @@ function InfoCard({ title, values, collapsible = false, actions = false, onAddQu
                     setTimeout(() => setCopied(""), 1_200);
                   }
                 }}
-              >{copied === name ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}</button>
+              >{copied === name ? "OK" : "CP"}</button>
             </span>
           )}
         </dd>
@@ -293,8 +271,6 @@ function InfoCard({ title, values, collapsible = false, actions = false, onAddQu
 }
 
 const recordAttributes = (record: Record) => prefixedPairs(record.fields, "attribute.");
-
-const recordAttribute = (record: Record, name: string) => recordAttributes(record).find(([key]) => key === name)?.[1];
 
 function TraceTree({ records, selectedId, onSelect }: { records: Record[]; selectedId: string; onSelect: (record: Record) => void }) {
   return <div className="trace-tree">
@@ -321,7 +297,7 @@ function RecordDetail({ record, traceRecords, traceLoading, traceError, onSelect
   const isMetric = record.signal === "metric";
   const isTrace = record.signal === "trace";
   const title = isMetric ? metricName(record) : text(record);
-  const logger = fieldString(record, "logger") || fieldString(record, "resource.service.name") || recordAttribute(record, "logger.name");
+  const logger = fieldString(record, "logger") || fieldString(record, "resource.service.name") || record.fields["attribute.logger.name"];
   const loggerField = fieldString(record, "logger") ? "logger" : fieldString(record, "resource.service.name") ? "resource.service.name" : "attribute.logger.name";
   const [view, setView] = useState<"view" | "raw">("view");
   const addRecordQuery = (section: string, name: string, value: string | number | boolean) => {
@@ -440,7 +416,7 @@ function StackFrameCard({ frame }: { frame: StackFrame }) {
         title="Copy path with line number"
         onClick={(event) => { event.preventDefault(); event.stopPropagation(); copyPath(); }}
       >
-        {copyStatus === "idle" ? <Copy aria-hidden="true" /> : copyStatus === "copied" ? <Check aria-hidden="true" /> : "ERR"}
+        {copyStatus === "idle" ? "CP" : copyStatus === "copied" ? "OK" : "ERR"}
       </button>
     </div>
   </>;
@@ -703,7 +679,7 @@ function SettingsPage({ theme, onTheme }: { theme: Theme; onTheme: (theme: Theme
 function DocsPage() {
   const mcpUrl = `${location.origin}/mcp`;
   return (
-    <div className="settings-page docs-page">
+    <div className="settings-page">
       <header className="settings-head">
         <p className="eyebrow">root / docs</p>
         <h1>connect MCP<span className="cursor">_</span></h1>
@@ -887,52 +863,21 @@ function App() {
 
   useEffect(() => {
     if (projectId === null) return;
-    const controller = new AbortController();
     let refreshTimer = 0;
-
-    async function watch() {
-      while (!controller.signal.aborted) {
-        try {
-          const response = await fetch("/api/v1/live", { signal: controller.signal });
-          if (!response.ok || !response.body) throw new Error(`live stream returned ${response.status}`);
-          setLive(true);
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          while (!controller.signal.aborted) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const events = buffer.split(/\r?\n\r?\n/);
-            buffer = events.pop() || "";
-            for (const event of events) {
-              const data = event
-                .split(/\r?\n/)
-                .filter((line) => line.startsWith("data:"))
-                .map((line) => line.slice(5).trimStart())
-                .join("\n");
-              if (!data) continue;
-              const change = JSON.parse(data) as Change;
-              const matchesTab = change.signal === tabSignals[tab];
-              if (change.project_id === projectId && matchesTab) {
-                clearTimeout(refreshTimer);
-                refreshTimer = window.setTimeout(() => setRefresh((value) => value + 1), 150);
-              }
-            }
-          }
-        } catch (reason) {
-          if ((reason as Error).name === "AbortError") break;
-        } finally {
-          setLive(false);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const events = new EventSource("/api/v1/live");
+    events.onopen = () => setLive(true);
+    events.onerror = () => setLive(false);
+    events.onmessage = ({ data }) => {
+      const change = JSON.parse(data) as Change;
+      if (change.project_id === projectId && change.signal === tabSignals[tab]) {
+        clearTimeout(refreshTimer);
+        refreshTimer = window.setTimeout(() => setRefresh((value) => value + 1), 150);
       }
-    }
-
-    watch();
+    };
     return () => {
-      controller.abort();
+      events.close();
       clearTimeout(refreshTimer);
+      setLive(false);
     };
   }, [projectId, tab]);
 
@@ -977,8 +922,9 @@ function App() {
   }, [projectId, query, range, routeIssueId, selectedIssue, tab]);
 
   const activeProject = projects.find((project) => project.id === projectId);
-  const activeDsn = activeProject ? dsn(activeProject, status?.listeners.sentry) : null;
-  const activeOtlpEndpoint = activeProject ? otlpEndpoint(activeProject, status?.listeners.otlp) : null;
+  const activeDsn = activeProject ? ingestUrl(status?.listeners.sentry, `/${activeProject.id}`, activeProject.key) : null;
+  const activeDdtraceAgentUrl = activeProject ? ingestUrl(status?.listeners.ddtrace, `/${activeProject.id}/${activeProject.key}/`) : null;
+  const activeOtlpEndpoint = activeProject ? ingestUrl(status?.listeners.otlp, `/${activeProject.id}/`) : null;
   const items = view?.projectId === projectId && view.tab === tab && view.range === range && view.query === query ? view.items : [];
 
   async function addProject(event: FormEvent) {
@@ -1025,12 +971,16 @@ function App() {
     }
   }
 
-  function closeDetail() {
-    const issueWasOpen = selectedIssue !== null || routeIssueId !== null;
+  function clearDetailState() {
     setSelected(null);
     setSelectedIssue(null);
     setIssueEvent(null);
     setRouteIssueId(null);
+  }
+
+  function closeDetail() {
+    const issueWasOpen = selectedIssue !== null || routeIssueId !== null;
+    clearDetailState();
     if (issueWasOpen && projectId !== null) history.pushState(null, "", routePath(projectId, tab, null, range, query));
   }
 
@@ -1062,30 +1012,21 @@ function App() {
   }
 
   function selectProject(id: number) {
-    setSelected(null);
-    setSelectedIssue(null);
-    setIssueEvent(null);
-    setRouteIssueId(null);
+    clearDetailState();
     setStaticPage(null);
     setProjectId(id);
     history.pushState(null, "", routePath(id, tab, null, range, query));
   }
 
   function openStaticPage(page: Exclude<StaticPage, null>) {
-    setSelected(null);
-    setSelectedIssue(null);
-    setIssueEvent(null);
-    setRouteIssueId(null);
+    clearDetailState();
     setStaticPage(page);
     history.pushState(null, "", `/${page}`);
   }
 
   function selectTab(next: Tab) {
     if (projectId !== null) history.pushState(null, "", routePath(projectId, next, null, range, query));
-    setSelected(null);
-    setSelectedIssue(null);
-    setIssueEvent(null);
-    setRouteIssueId(null);
+    clearDetailState();
     setTab(next);
   }
 
@@ -1152,7 +1093,20 @@ function App() {
                 onClick={() => activeDsn && copyIngest(activeDsn, `sentry-${activeProject.id}`)}
               >
                 <code>{activeDsn || "SENTRY DISABLED"}</code>
-                {activeDsn && (copied === `sentry-${activeProject.id}` ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />)}
+                {activeDsn && (copied === `sentry-${activeProject.id}` ? "OK" : "CP")}
+              </button>
+            </section>
+            <section className="dsn-block">
+              <div className="section-label">// DDTRACE AGENT URL</div>
+              <button
+                className="code-copy"
+                disabled={!activeDdtraceAgentUrl}
+                aria-label={copied === `ddtrace-${activeProject.id}` ? "DDTrace agent URL copied" : "Copy DDTrace agent URL"}
+                title={copied === `ddtrace-${activeProject.id}` ? "Copied" : "Copy DDTrace agent URL"}
+                onClick={() => activeDdtraceAgentUrl && copyIngest(activeDdtraceAgentUrl, `ddtrace-${activeProject.id}`)}
+              >
+                <code>{activeDdtraceAgentUrl || "DDTRACE DISABLED"}</code>
+                {activeDdtraceAgentUrl && (copied === `ddtrace-${activeProject.id}` ? "OK" : "CP")}
               </button>
             </section>
             <section className="dsn-block">
@@ -1165,7 +1119,7 @@ function App() {
                   onClick={() => copyIngest(activeOtlpEndpoint, `otlp-endpoint-${activeProject.id}`)}
                 >
                   <code>{activeOtlpEndpoint}</code>
-                  {copied === `otlp-endpoint-${activeProject.id}` ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+                  {copied === `otlp-endpoint-${activeProject.id}` ? "OK" : "CP"}
                 </button>
                 <button
                   className="code-copy"
@@ -1174,7 +1128,7 @@ function App() {
                   onClick={() => copyIngest(`Authorization: Bearer ${activeProject.key}`, `otlp-auth-${activeProject.id}`)}
                 >
                   <code>Authorization: Bearer {activeProject.key}</code>
-                  {copied === `otlp-auth-${activeProject.id}` ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+                  {copied === `otlp-auth-${activeProject.id}` ? "OK" : "CP"}
                 </button>
               </> : <code>OTLP DISABLED</code>}
             </section>
@@ -1260,7 +1214,7 @@ function App() {
           ) : !loading && !items.length ? (
             <div className="empty-state"><pre>{`> scan --range ${range}\n> 0 signals found_`}</pre><p>Waiting for telemetry or try a wider range.</p></div>
           ) : tab === "issues" ? (
-            <div className="issue-list">
+            <div>
               {(items as Issue[]).map((issue) => (
                 <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}>
                   <span className={`level ${issue.level}`}>{issue.level.toUpperCase()}</span>
@@ -1274,7 +1228,7 @@ function App() {
               ))}
             </div>
           ) : tab === "logs" ? (
-            <div className="log-list">
+            <div>
               {(items as Record[]).map((record) => (
                 <button className="log-row" key={record.id} onClick={() => { setSelectedIssue(null); setSelected(record); }}>
                   <time>{new Date(recordTimeMs(record)).toLocaleTimeString([], { hour12: false })}</time>
@@ -1296,7 +1250,7 @@ function App() {
               ))}
             </div>
           ) : (
-            <div className="trace-list">
+            <div>
               {(items as Record[]).map((record) => (
                 <button className="trace-row" key={record.id} onClick={() => { setSelectedIssue(null); setSelected(record); }}>
                   <time>{new Date(recordTimeMs(record)).toLocaleTimeString([], { hour12: false })}</time>
