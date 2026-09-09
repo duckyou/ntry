@@ -7,7 +7,7 @@ and the query API used by the web, CLI, and MCP front ends.
 ## Start
 
 ```sh
-cargo build --release
+curl -fsSL https://raw.githubusercontent.com/duckyou/ntry/main/install.sh | bash
 ntry serve --sentry-bind 127.0.0.1:8911 --otlp-bind 127.0.0.1:8918
 ntry project add demo
 ```
