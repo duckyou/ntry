@@ -1,3 +1,7 @@
+> [!CAUTION]
+> Ntry is under active development and mostly consists of AI slop code. 
+> Expect breaking changes and occasional proof that generating code is easier than maintaining it. 👍
+
 # Ntry
 
 Ntry is a local Sentry-compatible, Python ddtrace-compatible, and OTLP/HTTP
